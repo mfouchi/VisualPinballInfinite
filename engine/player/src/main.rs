@@ -1148,7 +1148,7 @@ fn play(o: &Options) -> Result<(), String> {
         None
     } else {
         let shown_on = layout.playfield.as_ref().map(|p| p.display.as_str());
-        displays.iter().find(|d| shown_on.map_or(d.primary, |name| d.name == name)).and_then(|d| d.size_cm)
+        player::settings::pick_display(shown_on.unwrap_or(""), &displays).and_then(|d| d.size_cm)
     };
     view_setup.apply_settings(&o.settings, o.view, &extent, screen_cm);
     // the table's own view — its own, with the main settings file's over it, neither its own

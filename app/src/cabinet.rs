@@ -36,7 +36,7 @@ pub fn open(app: &AppHandle, preset: Option<&str>) -> Result<Vec<&'static str>, 
             *before = Some((pos, size, main.is_fullscreen().unwrap_or(false), main.is_maximized().unwrap_or(false)));
         }
     }
-    let screen_of = |w: &crate::screens::WindowPlace| view.screens.iter().find(|s| s.name == w.screen).or_else(|| view.screens.first());
+    let screen_of = |w: &crate::screens::WindowPlace| view.screens.iter().find(|s| s.matches(&w.screen)).or_else(|| view.screens.first());
     if let Some(s) = view.settings.windows.iter().find(|w| w.id == "playfield").and_then(|w| screen_of(w)) {
         let _ = main.set_fullscreen(false);
         let _ = main.unmaximize();

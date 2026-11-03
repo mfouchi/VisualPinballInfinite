@@ -89,12 +89,13 @@
 
   function fallback(id) {
     const s = mainScreen();
-    return { id, output: id === 'playfield' ? 'window' : 'off', screen: s?.name || '', fullscreen: id === 'playfield', x: 0, y: 0, width: s?.width || 1280, height: s?.height || 720 };
+    return { id, output: id === 'playfield' ? 'window' : 'off', screen: s?.id || s?.name || '', fullscreen: id === 'playfield', x: 0, y: 0, width: s?.width || 1280, height: s?.height || 720 };
   }
 
   const screens = $derived(view?.screens || []);
   const mainScreen = () => screens.find((s) => s.primary) || screens[0];
-  const screenOf = (w) => screens.find((s) => s.name === w.screen) || mainScreen();
+  const screenKey = (s) => s.id || s.name;
+  const screenOf = (w) => screens.find((s) => screenKey(s) === w.screen || s.name === w.screen) || mainScreen();
   const win = (id) => draft?.windows.find((w) => w.id === id);
 
   // the desk: every screen's place, in desktop pixels
@@ -137,7 +138,7 @@
   }
 
   function jobsOn(s) {
-    return draft?.windows.filter((w) => w.output === 'window' && w.screen === s.name).map((w) => KINDS[w.id].label) || [];
+    return draft?.windows.filter((w) => w.output === 'window' && screenOf(w) === s).map((w) => KINDS[w.id].label) || [];
   }
 
   // dragging and sizing on the map
@@ -182,7 +183,7 @@
       const cx = drag.rect.x + drag.rect.w / 2 + dx;
       const cy = drag.rect.y + drag.rect.h / 2 + dy;
       const s = screens.find((s) => cx >= s.x && cx < s.x + s.width && cy >= s.y && cy < s.y + s.height) || screenOf(w);
-      w.screen = s.name;
+      w.screen = screenKey(s);
       if (w.fullscreen) return;
       Object.assign(w, fitted(o, s.width, s.height, keeps(w.id)));
       const near = Math.round(Math.max(s.width, s.height) * 0.015);
@@ -315,7 +316,7 @@
     const main = mainScreen();
     const others = screens.filter((s) => s !== main).sort((a, b) => b.width * b.height - a.width * a.height);
     const out = [];
-    const full = (id, s) => ({ id, output: 'window', screen: s.name, fullscreen: true, x: 0, y: 0, width: s.width, height: s.height });
+    const full = (id, s) => ({ id, output: 'window', screen: screenKey(s), fullscreen: true, x: 0, y: 0, width: s.width, height: s.height });
     const off = (id) => ({ ...fallback(id), output: 'off' });
     out.push({
       name: 'One screen',
@@ -342,9 +343,9 @@
           apply: {
             windows: [
               full('playfield', main),
-              { id: 'backglass', output: 'window', screen: wide.name, fullscreen: false, x: side, y: 0, width: bw, height: H },
-              { id: 'scoreView', output: 'window', screen: wide.name, fullscreen: false, x: side + bw, y: sy, width: side, height: sh },
-              { id: 'topper', output: 'window', screen: wide.name, fullscreen: false, x: 0, y: sy, width: side, height: sh },
+              { id: 'backglass', output: 'window', screen: screenKey(wide), fullscreen: false, x: side, y: 0, width: bw, height: H },
+              { id: 'scoreView', output: 'window', screen: screenKey(wide), fullscreen: false, x: side + bw, y: sy, width: side, height: sh },
+              { id: 'topper', output: 'window', screen: screenKey(wide), fullscreen: false, x: 0, y: sy, width: side, height: sh },
             ],
           },
         });
@@ -413,7 +414,7 @@
       draft.windows.sort((a, b) => ORDER.indexOf(a.id) - ORDER.indexOf(b.id));
     } else {
       const main = mainScreen();
-      draft.windows = ORDER.map((id) => ({ ...fallback(id), screen: main?.name || '' }));
+      draft.windows = ORDER.map((id) => ({ ...fallback(id), screen: main ? screenKey(main) : '' }));
       if (l.name === 'One screen') notice('The table alone on the main screen is the player’s own way; there’s nothing before it to go back to.');
     }
     before = null;
@@ -495,7 +496,7 @@
 
   async function identify() {
     const jobs = {};
-    for (const s of screens) jobs[s.name] = jobsOn(s).join(', ') || 'Nothing on it';
+    for (const s of screens) jobs[screenKey(s)] = jobsOn(s).join(', ') || 'Nothing on it';
     try {
       await invoke('identify_screens', { jobs });
     } catch (e) {
@@ -519,8 +520,11 @@
     if (!arranging) return;
     arranging = false;
     try {
-      if (keep) draft.windows = await invoke('arranged_windows', { windows: $state.snapshot(draft.windows) });
-      else await invoke('cancel_arranging');
+      if (keep) {
+        draft.windows = await invoke('arranged_windows', { windows: $state.snapshot(draft.windows) });
+        noteShapes();
+        await save();
+      } else await invoke('cancel_arranging');
     } catch (e) {
       notice(String(e), { kind: 'problem' });
     }
@@ -552,7 +556,7 @@
         <button type="button" class="btn" onclick={() => (naming = true)} disabled={!draft}><Icon name="layers" />Save as preset…</button>
       {/if}
       <button type="button" class="btn" onclick={identify} disabled={!screens.length}><Icon name="eye" />Identify screens</button>
-      <button type="button" class="btn" onclick={arrange} disabled={!screens.length || arranging}><Icon name="grid" />Arrange on your screens</button>
+      <button type="button" class="btn" onclick={arrange} disabled={!screens.length || arranging || busy}><Icon name="grid" />Arrange on your screens</button>
       <button type="button" class="btn ghost" onclick={undo} disabled={!changed || busy}>Undo changes</button>
       <button type="button" class="btn save" onclick={save} disabled={!changed || busy}><Icon name="check" />Save</button>
       {#if onclose}<button type="button" class="btn icon ghost" aria-label="Close" onclick={onclose}><Icon name="x" /></button>{/if}
@@ -579,7 +583,7 @@
 
     <section class="map-wrap" aria-label="Your screens">
       <div class="map" bind:this={mapEl} style="aspect-ratio: {desk.w} / {desk.h}; width: min(100%, {Math.round((380 * desk.w) / desk.h)}px)">
-        {#each screens as s (s.name)}
+        {#each screens as s (s.number)}
           <div class="screen" class:main={s.primary} style="left: {pct(s.x - desk.x, desk.w)}; top: {pct(s.y - desk.y, desk.h)}; width: {pct(s.width, desk.w)}; height: {pct(s.height, desk.h)}">
             <span class="tag"><span class="label"><b>{s.number}</b> {s.name}{s.primary ? ' · main' : ''}</span>
             <span class="facts">{s.width}×{s.height} · {Math.round(s.scale)}% · {Math.round(s.refresh)} Hz{inches(s) ? ` · ${inches(s)}` : ''}{s.hdr ? ' · HDR' : ''}</span></span>
@@ -684,7 +688,7 @@
               <div class="row">
                 <span class="name">Screen</span>
                 <select class="select" value={w.screen} onchange={(e) => setScreen(w, e.currentTarget.value)}>
-                  {#each screens as o (o.name)}<option value={o.name}>{o.number}: {o.name}</option>{/each}
+                  {#each screens as o (o.number)}<option value={screenKey(o)}>{o.number}: {o.name}</option>{/each}
                 </select>
                 <label class="check"><input type="checkbox" checked={w.fullscreen} onchange={(e) => setFill(w, e.currentTarget.checked)} />Fill the screen</label>
               </div>

@@ -1,7 +1,8 @@
 <script>
   // Arrange: a stand-in for one of the player's windows, opened by the Screens page where that
   // window goes, to be dragged by its middle and sized by its edges and corners on the real
-  // screens; a double-click makes it fill its screen. Done and Cancel on each stand-in too (Enter
+  // screens; a double-click makes it fill its screen. Done saves the arrangement; Cancel discards
+  // it. Both are on each stand-in too (Enter
   // and Esc), as the playfield's covers the app on its screen; the page reads where each was left.
   // One keeping its shape (`keep=1`) is held to it by the app as Windows sizes it.
   import { getCurrentWindow, currentMonitor, PhysicalPosition, PhysicalSize } from '@tauri-apps/api/window';
@@ -63,7 +64,7 @@
   </div>
   <b>{kind.label}</b>
   <span class="size">{size}</span>
-  <span class="how">Drag to move · drag an edge or corner to size it{keep ? ', its shape kept' : ''} · double-click to fill the screen · Enter when done</span>
+  <span class="how">Drag to move · drag an edge or corner to size it{keep ? ', its shape kept' : ''} · double-click to fill the screen · Done saves your layout</span>
   {#each edges as [cls, dir] (cls)}
     <div class="edge {cls}" role="presentation" onpointerdown={edge(dir)}></div>
   {/each}

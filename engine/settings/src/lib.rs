@@ -225,9 +225,22 @@ pub struct Placement {
     pub display: String,
 }
 
+/// Keep existing names for distinct monitors. Identical models need a selector that also names
+/// their desktop position, shared by the settings page and player and independent of list order.
+pub fn display_key(display: &Display, displays: &[Display]) -> String {
+    if displays.iter().filter(|d| d.name == display.name).count() > 1 {
+        format!("vpi-display:{},{}:{}", display.x, display.y, display.name)
+    } else {
+        display.name.clone()
+    }
+}
+
 /// The screen a window goes on (VPX's `Window::GetDisplayConfig`): the one
 /// named, else the main screen (else the first).
 pub fn pick_display<'a>(name: &str, displays: &'a [Display]) -> Option<&'a Display> {
+    if let Some(display) = displays.iter().find(|d| d.name == name || display_key(d, displays) == name) {
+        return Some(display);
+    }
     let mut picked = None;
     for d in displays {
         if d.name == name {
@@ -279,7 +292,7 @@ pub fn place(ws: &WindowSettings, displays: &[Display]) -> Option<Placement> {
             }
         }
     }
-    Some(Placement { x, y, width: w.max(1), height: h.max(1), fullscreen: ws.fullscreen, display: d.name.clone() })
+    Some(Placement { x, y, width: w.max(1), height: h.max(1), fullscreen: ws.fullscreen, display: display_key(d, displays) })
 }
 
 /// VPX's `trim_string`: spaces, tabs and line ends off both ends.
@@ -485,6 +498,22 @@ mod tests {
         let mut d = screens();
         d.iter_mut().for_each(|s| s.primary = false);
         assert_eq!(pick_display("", &d).unwrap().name, "ULTRAWIDE");
+    }
+
+    #[test]
+    fn identical_monitors_have_distinct_selectors_and_keep_their_placement() {
+        let mut displays = screens();
+        for d in &mut displays { d.name = "Identical monitor".into(); }
+        let key = display_key(&displays[0], &displays);
+        assert_ne!(key, display_key(&displays[1], &displays));
+        assert_eq!(pick_display(&key, &displays), Some(&displays[0]));
+        let entries = parse_ini(&format!("[Player]\nPlayfieldDisplay = {key}\nPlayfieldFullScreen = 1\n"));
+        let placed = place(&window(&entries, WindowId::Playfield), &displays).unwrap();
+        assert_eq!((placed.x, placed.y, placed.display), (displays[0].x, displays[0].y, key.clone()));
+        displays.reverse();
+        assert_eq!(pick_display(&key, &displays), Some(&displays[1]));
+        // Old settings with a plain friendly name still select the first matching monitor.
+        assert_eq!(pick_display("Identical monitor", &displays), Some(&displays[0]));
     }
 
     #[test]

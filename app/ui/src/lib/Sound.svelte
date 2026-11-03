@@ -59,7 +59,11 @@
 
   // an output the file names that isn't connected now still shows, so it isn't lost by saving
   function choices(current) {
-    const list = (view?.outputs || []).map((o) => ({ value: o.name, label: `${o.name}${o.channels ? ` — ${channels(o.channels)}` : ''}` }));
+    // Identical monitors can expose outputs with the same name. The player picks the first
+    // matching name, so show that choice once, with its channels, and keep the option keys unique.
+    const outputs = new Map();
+    for (const o of view?.outputs || []) if (!outputs.has(o.name)) outputs.set(o.name, o);
+    const list = [...outputs.values()].map((o) => ({ value: o.name, label: `${o.name}${o.channels ? ` — ${channels(o.channels)}` : ''}` }));
     if (current && !list.some((o) => o.value === current)) list.push({ value: current, label: `${current} — not connected now` });
     return [{ value: '', label: `Windows’ default${view?.defaultChannels ? ` — ${channels(view.defaultChannels)}` : ''}` }, ...list];
   }

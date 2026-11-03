@@ -21,6 +21,9 @@ use vpi_settings::{Change, Display, Output, WindowId};
 pub struct Screen {
     /// As `vpi-player --displays` numbers them, from 1.
     pub number: u32,
+    /// The settings' selector. Friendly names alone cannot distinguish identical monitors.
+    #[serde(default)]
+    pub id: String,
     pub name: String,
     /// Its place on the desktop, in SDL's units (pixels on Windows).
     pub x: i32,
@@ -39,6 +42,10 @@ pub struct Screen {
 }
 
 impl Screen {
+    pub fn matches(&self, key: &str) -> bool {
+        self.id == key || self.name == key
+    }
+
     fn display(&self) -> Display {
         Display {
             name: self.name.clone(),
@@ -73,7 +80,16 @@ pub fn screens() -> Result<Vec<Screen>, String> {
     if !out.status.success() {
         return Err("The player couldn't list the screens.".into());
     }
-    serde_json::from_slice(&out.stdout).map_err(|e| format!("The player's list of screens couldn't be read: {e}"))
+    let mut screens: Vec<Screen> = serde_json::from_slice(&out.stdout).map_err(|e| format!("The player's list of screens couldn't be read: {e}"))?;
+    identify_displays(&mut screens);
+    Ok(screens)
+}
+
+fn identify_displays(screens: &mut [Screen]) {
+    let displays: Vec<_> = screens.iter().map(Screen::display).collect();
+    for (screen, display) in screens.iter_mut().zip(&displays) {
+        screen.id = vpi_settings::display_key(display, &displays);
+    }
 }
 
 /// The player's ways of handing frames to the screen, as `[VPI]` `Present` names them.
@@ -185,7 +201,7 @@ pub fn load() -> Result<ScreensView, String> {
         .into_iter()
         .filter_map(|id| {
             let ws = vpi_settings::window(&entries, id);
-            (ws.output != Output::Disabled && !ws.display.is_empty() && !screens.iter().any(|s| s.name == ws.display)).then(|| (id_name(id).to_string(), ws.display))
+            (ws.output != Output::Disabled && !ws.display.is_empty() && !screens.iter().any(|s| s.matches(&ws.display))).then(|| (id_name(id).to_string(), ws.display))
         })
         .collect();
     Ok(ScreensView { screens, settings, set, missing, file: path.display().to_string(), exists })
@@ -311,13 +327,13 @@ fn changes(entries: &[(String, String, String)], base: &[(String, String, String
                 continue;
             }
         }
-        let screen = screens.iter().find(|s| s.name == w.screen).ok_or_else(|| format!("The screen {} isn't connected.", w.screen))?;
+        let screen = screens.iter().find(|s| s.matches(&w.screen)).ok_or_else(|| format!("The screen {} isn't connected.", w.screen))?;
         // held inside its screen, as the player would hold it
         let width = w.width.clamp(1, screen.width);
         let height = w.height.clamp(1, screen.height);
         let x = w.x.clamp(0, (screen.width - width).max(0));
         let y = w.y.clamp(0, (screen.height - height).max(0));
-        put("Display", screen.name.clone(), None);
+        put("Display", screen.id.clone(), None);
         put("FullScreen", i32::from(w.fullscreen).to_string(), Some("0"));
         put("WndX", x.to_string(), None);
         put("WndY", y.to_string(), None);
@@ -568,14 +584,23 @@ pub(crate) fn made_at<'a, R: tauri::Runtime, M: Manager<R>>(builder: WebviewWind
     builder.position(f64::from(x) / scale, f64::from(y) / scale).inner_size(f64::from(width.max(1)) / scale, f64::from(height.max(1)) / scale)
 }
 
+// Closing a webview is asynchronous. A new helper must never reuse a label still being destroyed.
+fn helper_label(kind: &str, id: &str) -> String {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static NEXT: AtomicU64 = AtomicU64::new(1);
+    format!("{kind}-{id}-{}", NEXT.fetch_add(1, Ordering::Relaxed))
+}
+
 /// Each screen's number and name shown on it for a few seconds.
 pub fn identify(app: &AppHandle, jobs: &BTreeMap<String, String>) -> Result<(), String> {
-    for s in screens()? {
-        let label = format!("identify-{}", s.number);
-        if let Some(old) = app.get_webview_window(&label) {
-            let _ = old.close();
+    for (label, window) in app.webview_windows() {
+        if label.starts_with("identify-") {
+            let _ = window.close();
         }
-        let job = jobs.get(&s.name).map(String::as_str).unwrap_or("");
+    }
+    for s in screens()? {
+        let label = helper_label("identify", &s.number.to_string());
+        let job = jobs.get(&s.id).or_else(|| jobs.get(&s.name)).map(String::as_str).unwrap_or("");
         let hash = format!("identify&n={}&name={}&job={}&size={}x{}", s.number, encode(&s.name), encode(job), s.width, s.height);
         // a card in the middle of the screen, a third of its width
         let (w, h) = ((s.width / 3).max(420), (s.height / 4).max(240));
@@ -611,8 +636,8 @@ pub fn arrange(app: &AppHandle, windows: &[WindowPlace], keep: &BTreeMap<String,
     let screens = screens()?;
     let mut labels = Vec::new();
     for w in windows.iter().filter(|w| w.output == "window" || w.id == "playfield") {
-        let Some(s) = screens.iter().find(|s| s.name == w.screen) else { continue };
-        let label = format!("arrange-{}", w.id);
+        let Some(s) = screens.iter().find(|s| s.matches(&w.screen)) else { continue };
+        let label = helper_label("arrange", &w.id);
         let shape = keep.get(&w.id).copied().filter(|v| v.is_finite() && *v > 0.0);
         let hash = format!("index.html#arrange&id={}{}", w.id, if shape.is_some() { "&keep=1" } else { "" });
         // as small as a stand-in gets, in its shape
@@ -650,8 +675,9 @@ pub fn arranged(app: &AppHandle, windows: &[WindowPlace]) -> Result<Vec<WindowPl
     let shapes: BTreeMap<String, Option<f64>> = app.state::<Arranging>().0.lock().unwrap().iter().cloned().collect();
     let mut out = windows.to_vec();
     for w in &mut out {
-        let label = format!("arrange-{}", w.id);
-        let Some(window) = app.get_webview_window(&label) else { continue };
+        let prefix = format!("arrange-{}-", w.id);
+        let Some((label, shape)) = shapes.iter().find(|(label, _)| label.starts_with(&prefix)) else { continue };
+        let Some(window) = app.get_webview_window(label) else { continue };
         // its inside, not its frame's invisible edges
         let (Ok(pos), Ok(size)) = (window.inner_position(), window.inner_size()) else { continue };
         let (x, y, width, height) = (pos.x, pos.y, size.width as i32, size.height as i32);
@@ -662,8 +688,8 @@ pub fn arranged(app: &AppHandle, windows: &[WindowPlace]) -> Result<Vec<WindowPl
             i64::from(w.max(0)) * i64::from(h.max(0))
         };
         let Some(s) = screens.iter().max_by_key(|s| overlap(s)) else { continue };
-        w.screen = s.name.clone();
-        if shapes.get(&label).copied().flatten().is_some() {
+        w.screen = s.id.clone();
+        if shape.is_some() {
             *w = kept_in(w, s, x - s.x, y - s.y, width, height);
             continue;
         }
@@ -701,7 +727,7 @@ fn kept_in(w: &WindowPlace, s: &Screen, x: i32, y: i32, width: i32, height: i32)
         };
         v.clamp(0, (room - size).max(0))
     };
-    out.screen = s.name.clone();
+    out.screen = s.id.clone();
     out.fullscreen = s.width - width <= 16 && s.height - height <= 16;
     if out.fullscreen {
         (out.x, out.y, out.width, out.height) = (0, 0, s.width, s.height);
@@ -741,6 +767,7 @@ mod tests {
     fn desk() -> Vec<Screen> {
         let s = |number, name: &str, x, width, height, primary| Screen {
             number,
+            id: name.into(),
             name: name.into(),
             x,
             y: 0,
@@ -754,6 +781,35 @@ mod tests {
             primary,
         };
         vec![s(1, "Big Screen", 0, 3840, 2160, true), s(2, "Wide Screen", -3440, 3440, 1440, false)]
+    }
+
+    #[test]
+    fn duplicate_monitor_placements_round_trip_through_the_settings_file() {
+        let mut screens = desk();
+        for s in &mut screens { s.name = "Identical monitor".into(); }
+        identify_displays(&mut screens);
+        assert_ne!(screens[0].id, screens[1].id);
+        let before = settings_of(&[], &screens);
+        let mut after = before.clone();
+        let pf = after.windows.iter_mut().find(|w| w.id == "playfield").unwrap();
+        pf.screen = screens[1].id.clone();
+        pf.fullscreen = false;
+        (pf.x, pf.y, pf.width, pf.height) = (120, 80, 800, 600);
+        let text = vpi_settings::edit("", &changes(&[], &[], &before, &after, &screens, false).unwrap());
+        let entries = vpi_settings::parse_ini(&text);
+        let reloaded = settings_of(&entries, &screens);
+        assert_eq!(reloaded.windows, after.windows);
+        let displays: Vec<_> = screens.iter().map(Screen::display).collect();
+        let player = vpi_settings::place(&vpi_settings::window(&entries, WindowId::Playfield), &displays).unwrap();
+        assert_eq!((player.x, player.y, player.width, player.height), (screens[1].x + 120, 80, 800, 600));
+        let stand_in = kept_in(&after.windows[0], &screens[1], 120, 80, 800, 600);
+        assert_eq!(stand_in.screen, screens[1].id);
+    }
+
+    #[test]
+    fn helper_labels_are_never_reused_while_windows_close() {
+        assert_ne!(helper_label("identify", "1"), helper_label("identify", "1"));
+        assert_ne!(helper_label("arrange", "playfield"), helper_label("arrange", "playfield"));
     }
 
     #[test]
